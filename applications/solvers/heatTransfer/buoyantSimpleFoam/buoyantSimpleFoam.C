@@ -60,7 +60,7 @@ int main(int argc, char* argv[])
 
     Foam::Time runTime(Foam::Time::controlDictName, args);
 #include "createMesh.H"
-#include "createControl.H"
+    simpleControl simple(mesh);
     Info << "Reading thermophysical properties\n" << endl;
 
     autoPtr<rhoThermo> pThermo(rhoThermo::New(mesh));
@@ -96,7 +96,7 @@ int main(int argc, char* argv[])
         mesh
     );
 
-    Info<< "Reading/calculating face flux field phi\n" << endl;
+    Info << "Reading/calculating face flux field phi\n" << endl;
 
     surfaceScalarField phi
     (
@@ -108,7 +108,7 @@ int main(int argc, char* argv[])
             IOobject::READ_IF_PRESENT,
             IOobject::AUTO_WRITE
         ),
-        linearInterpolate(rho*U) & mesh.Sf()
+        linearInterpolate(rho * U) & mesh.Sf()
     );
 
     Info << "Creating turbulence model\n" << endl;
@@ -124,9 +124,9 @@ int main(int argc, char* argv[])
     );
 
 
-    Info<< "\nReading g" << endl;
+    Info << "\nReading g" << endl;
     const meshObjects::gravity& g = meshObjects::gravity::New(runTime);
-    Info<< "\nReading hRef" << endl;
+    Info << "\nReading hRef" << endl;
     uniformDimensionedScalarField hRef
     (
         IOobject
@@ -139,12 +139,12 @@ int main(int argc, char* argv[])
         ),
         dimensionedScalar(word::null, dimLength, Zero)
     );
-    Info<< "Calculating field g.h\n" << endl;
+    Info << "Calculating field g.h\n" << endl;
     dimensionedScalar ghRef
     (
         mag(g.value()) > SMALL
-      ? g & (cmptMag(g.value())/mag(g.value()))*hRef
-      : dimensionedScalar("ghRef", g.dimensions()*dimLength, 0)
+            ? g & (cmptMag(g.value()) / mag(g.value())) * hRef
+            : dimensionedScalar("ghRef", g.dimensions() * dimLength, 0)
     );
     const int oldLocal = volVectorField::Boundary::localConsistency;
     volVectorField::Boundary::localConsistency = 0;
@@ -226,9 +226,9 @@ int main(int argc, char* argv[])
             tmp<fvVectorMatrix> tUEqn
             (
                 fvm::div(phi, U)
-              + MRF.DDt(rho, U)
-              + turbulence->divDevRhoReff(U)
-             ==
+                + MRF.DDt(rho, U)
+                + turbulence->divDevRhoReff(U)
+                ==
                 fvOptions(rho, U)
             );
             fvVectorMatrix& UEqn = tUEqn.ref();
@@ -242,21 +242,131 @@ int main(int argc, char* argv[])
                 solve
                 (
                     UEqn
-                 ==
+                    ==
                     fvc::reconstruct
                     (
                         (
-                          - ghf*fvc::snGrad(rho)
-                          - fvc::snGrad(p_rgh)
-                        )*mesh.magSf()
+                            -ghf * fvc::snGrad(rho)
+                            - fvc::snGrad(p_rgh)
+                        ) * mesh.magSf()
                     )
                 );
 
                 fvOptions.correct(U);
             }
 
-#include "EEqn.H"
-#include "pEqn.H"
+            {
+                volScalarField& he = thermo.he();
+
+                fvScalarMatrix EEqn
+                (
+                    fvm::div(phi, he)
+                    + (
+                        he.name() == "e"
+                            ? fvc::div(phi, volScalarField("Ekp", 0.5 * magSqr(U) + p / rho))
+                            : fvc::div(phi, volScalarField("K", 0.5 * magSqr(U)))
+                    )
+                    - fvm::laplacian(turbulence->alphaEff(), he)
+                    ==
+                    rho * (U & g)
+                    + radiation->Sh(thermo, he)
+                    + fvOptions(rho, he)
+                );
+
+                EEqn.relax();
+
+                fvOptions.constrain(EEqn);
+
+                EEqn.solve();
+
+                fvOptions.correct(he);
+
+                thermo.correct();
+                radiation->correct();
+            }
+            {
+                volScalarField rAU("rAU", 1.0 / UEqn.A());
+                surfaceScalarField rhorAUf("rhorAUf", fvc::interpolate(rho * rAU));
+                volVectorField HbyA(constrainHbyA(rAU * UEqn.H(), U, p_rgh));
+                tUEqn.clear();
+
+                surfaceScalarField phig(-rhorAUf * ghf * fvc::snGrad(rho) * mesh.magSf());
+
+                surfaceScalarField phiHbyA
+                (
+                    "phiHbyA",
+                    fvc::flux(rho * HbyA)
+                );
+
+                MRF.makeRelative(fvc::interpolate(rho), phiHbyA);
+
+                bool closedVolume = adjustPhi(phiHbyA, U, p_rgh);
+
+                phiHbyA += phig;
+
+                // Update the pressure BCs to ensure flux consistency
+                constrainPressure(p_rgh, rho, U, phiHbyA, rhorAUf, MRF);
+
+                dimensionedScalar compressibility = fvc::domainIntegrate(psi);
+                bool compressible = (compressibility.value() > SMALL);
+
+                while (simple.correctNonOrthogonal())
+                {
+                    fvScalarMatrix p_rghEqn
+                    (
+                        fvm::laplacian(rhorAUf, p_rgh) == fvc::div(phiHbyA)
+                    );
+
+                    p_rghEqn.setReference(pRefCell, getRefCellValue(p_rgh, pRefCell));
+
+                    p_rghEqn.solve();
+
+                    if (simple.finalNonOrthogonalIter())
+                    {
+                        // Calculate the conservative fluxes
+                        phi = phiHbyA - p_rghEqn.flux();
+
+                        // Explicitly relax pressure for momentum corrector
+                        p_rgh.relax();
+
+                        // Correct the momentum source with the pressure gradient flux
+                        // calculated from the relaxed pressure
+                        U = HbyA + rAU * fvc::reconstruct((phig - p_rghEqn.flux()) / rhorAUf);
+                        U.correctBoundaryConditions();
+                        fvOptions.correct(U);
+                    }
+                }
+
+                p = p_rgh + rho * gh;
+
+#include "continuityErrs.H"
+
+                // For closed-volume cases adjust the pressure level
+                // to obey overall mass continuity
+                if (closedVolume)
+                {
+                    if (!compressible)
+                    {
+                        p += dimensionedScalar
+                        (
+                            "p",
+                            p.dimensions(),
+                            pRefValue - getRefCellValue(p, pRefCell)
+                        );
+                    }
+                    else
+                    {
+                        p += (initialMass - fvc::domainIntegrate(psi * p))
+                            / fvc::domainIntegrate(psi);
+                    }
+                    p_rgh = p - rho * gh;
+                }
+
+                rho = thermo.rho();
+                rho.relax();
+                Info << "rho min/max : " << min(rho).value() << " " << max(rho).value()
+                    << endl;
+            }
         }
 
         turbulence->correct();

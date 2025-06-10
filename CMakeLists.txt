@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 4.0)
+
+add_definitions(-DWM_LABEL_SIZE=64)
+add_definitions(-DWM_DP)
+
 add_executable(
         buoyantSimpleFoam
         applications/solvers/heatTransfer/buoyantSimpleFoam/buoyantSimpleFoam.C
@@ -7,44 +11,14 @@ add_executable(
 
 target_include_directories(
         buoyantSimpleFoam PUBLIC
-        src/finiteVolume/cfdTools/general/include
-        src/thermophysicalModels/basic/rhoThermo
-        src/TurbulenceModels/compressible/turbulentFluidThermoModels
-        src/thermophysicalModels/radiation/radiationModels/radiationModel
-        src/finiteVolume/cfdTools/general/solutionControl/simpleControl
-        src/finiteVolume/cfdTools/general/fvOptions
-        src/OpenFOAM/db/functionObjects/functionObjectList
-        src/OpenFOAM/include
-        src/finiteVolume/cfdTools/general/solutionControl
-        src/finiteVolume/fvMatrices
-        src/OpenFOAM/memory/tmp
-        src/functionObjects/field/div
-        src/finiteVolume/cfdTools/compressible
-        src/finiteVolume/cfdTools/general/MRF
-        src/OpenFOAM/dimensionedTypes/dimensionedScalar
-        src/finiteVolume/cfdTools/general/solutionControl/solutionControl
-        src/OpenFOAM/memory/autoPtr
-        src/finiteVolume/fvMatrices/fvMatrix
-        src/finiteVolume/fvMesh
-        src/finiteVolume/finiteVolume/fvc
-        src/finiteVolume/finiteVolume/fvm
-        src/OpenFOAM/global/argList
-        src/OpenFOAM/fields/GeometricFields/GeometricField
-        src/finiteVolume/fields/fvPatchFields/fvPatchField
-        src/finiteVolume/fields/volFields
-        src/finiteVolume/fields/surfaceFields
-        src/OpenFOAM/matrices/lduMatrix/lduMatrix
-        src/OpenFOAM/meshes/lduMesh
-        src/OpenFOAM/db/IOobject
-        src/finiteVolume/interpolation/surfaceInterpolation/schemes/linear
-        src/TurbulenceModels/compressible/ThermalDiffusivity
-        src/TurbulenceModels/compressible/CompressibleTurbulenceModel
-        src/thermophysicalModels/basic/fluidThermo
-        src/thermophysicalModels/radiation/include
-        src/OpenFOAM/fields/Fields
-        src/OpenFOAM/primitives/Scalar/scalar
-        src/OpenFOAM/primitives/Vector/floats
-        src/OpenFOAM/primitives/Scalar/floatScalar
-        src/OpenFOAM/primitives/Scalar/doubleScalar
-        src/OpenFOAM/primitives/Scalar
-        )
+        src/finiteVolume/lnInclude
+        src/meshTools/lnInclude
+        src/sampling/lnInclude
+        src/transportModels/compressible/lnInclude
+        src/thermophysicalModels/basic/lnInclude
+        src/thermophysicalModels/radiation/lnInclude
+        src/TurbulenceModels/turbulenceModels/lnInclude
+        src/TurbulenceModels/compressible/lnInclude
+        src/regionFaModels/lnInclude
+        src/OpenFOAM/lnInclude
+)
