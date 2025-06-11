@@ -72,32 +72,104 @@ Description
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-int main(int argc, char *argv[])
+int main(int argc, char* argv[])
 {
     argList::addNote
     (
         "Steady-state solver for incompressible, turbulent flows."
     );
 
-    #include "postProcess.H"
+#include "postProcess.H"
 
-    #include "addCheckCaseOptions.H"
-    #include "setRootCaseLists.H"
-    #include "createTime.H"
-    #include "createDynamicFvMesh.H"
-    #include "createControl.H"
-    #include "createFields.H"
-    #include "initContinuityErrs.H"
+#include "addCheckCaseOptions.H"
+#include "setRootCaseLists.H"
+    Foam::Info<< "Create time\n" << Foam::endl;
+
+    Foam::Time runTime(Foam::Time::controlDictName, args);
+    Info << "Create mesh for time = "
+        << runTime.timeName() << nl << endl;
+
+    autoPtr<dynamicFvMesh> meshPtr(dynamicFvMesh::New(args, runTime));
+
+    dynamicFvMesh& mesh = meshPtr();
+
+    simpleControl simple(mesh);
+    Info << "Reading field p\n" << endl;
+    volScalarField p
+    (
+        IOobject
+        (
+            "p",
+            runTime.timeName(),
+            mesh,
+            IOobject::MUST_READ,
+            IOobject::AUTO_WRITE
+        ),
+        mesh
+    );
+
+    Info << "Reading field U\n" << endl;
+    volVectorField U
+    (
+        IOobject
+        (
+            "U",
+            runTime.timeName(),
+            mesh,
+            IOobject::MUST_READ,
+            IOobject::AUTO_WRITE
+        ),
+        mesh
+    );
+
+    Info<< "Reading/calculating face flux field phi\n" << endl;
+
+    surfaceScalarField phi
+    (
+        IOobject
+        (
+            "phi",
+            runTime.timeName(),
+            mesh,
+            IOobject::READ_IF_PRESENT,
+            IOobject::AUTO_WRITE
+        ),
+        fvc::flux(U)
+    );
+
+
+    label pRefCell = 0;
+    scalar pRefValue = 0.0;
+    setRefCell(p, simple.dict(), pRefCell, pRefValue);
+    mesh.setFluxRequired(p.name());
+
+
+    singlePhaseTransportModel laminarTransport(U, phi);
+
+    autoPtr<incompressible::turbulenceModel> turbulence
+    (
+        incompressible::turbulenceModel::New(U, phi, laminarTransport)
+    );
+
+    IOMRFZoneList MRF(mesh);
+
+    fv::options& fvOptions(fv::options::New(mesh));
+
+    if (!fvOptions.optionList::size())
+    {
+        Info << "No finite volume options present" << endl;
+    }
+#include "initContinuityErrs.H"
 
     turbulence->validate();
 
     // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-    Info<< "\nStarting time loop\n" << endl;
+    Info << "\nStarting time loop\n" << endl;
 
     while (simple.loop())
     {
-        Info<< "Time = " << runTime.timeName() << nl << endl;
+        Info << "Time = " << runTime.timeName() << nl << endl;
 
         // Do any mesh changes
         mesh.controlledUpdate();
@@ -109,8 +181,80 @@ int main(int argc, char *argv[])
 
         // --- Pressure-velocity SIMPLE corrector
         {
-            #include "UEqn.H"
-            #include "pEqn.H"
+            // Momentum predictor
+
+            MRF.correctBoundaryVelocity(U);
+
+            tmp<fvVectorMatrix> tUEqn
+            (
+                fvm::div(phi, U)
+                + MRF.DDt(U)
+                + turbulence->divDevReff(U)
+                ==
+                fvOptions(U)
+            );
+            fvVectorMatrix& UEqn = tUEqn.ref();
+
+            UEqn.relax();
+
+            fvOptions.constrain(UEqn);
+
+            if (simple.momentumPredictor())
+            {
+                solve(UEqn == -fvc::grad(p));
+
+                fvOptions.correct(U);
+            }
+            {
+                volScalarField rAU(1.0 / UEqn.A());
+                volVectorField HbyA(constrainHbyA(rAU * UEqn.H(), U, p));
+                surfaceScalarField phiHbyA("phiHbyA", fvc::flux(HbyA));
+                MRF.makeRelative(phiHbyA);
+                adjustPhi(phiHbyA, U, p);
+
+                tmp<volScalarField> rAtU(rAU);
+
+                if (simple.consistent())
+                {
+                    rAtU = 1.0 / (1.0 / rAU - UEqn.H1());
+                    phiHbyA +=
+                        fvc::interpolate(rAtU() - rAU) * fvc::snGrad(p) * mesh.magSf();
+                    HbyA -= (rAU - rAtU()) * fvc::grad(p);
+                }
+
+                tUEqn.clear();
+
+                // Update the pressure BCs to ensure flux consistency
+                constrainPressure(p, U, phiHbyA, rAtU(), MRF);
+
+                // Non-orthogonal pressure corrector loop
+                while (simple.correctNonOrthogonal())
+                {
+                    fvScalarMatrix pEqn
+                    (
+                        fvm::laplacian(rAtU(), p) == fvc::div(phiHbyA)
+                    );
+
+                    pEqn.setReference(pRefCell, pRefValue);
+
+                    pEqn.solve();
+
+                    if (simple.finalNonOrthogonalIter())
+                    {
+                        phi = phiHbyA - pEqn.flux();
+                    }
+                }
+
+#include "continuityErrs.H"
+
+                // Explicitly relax pressure for momentum corrector
+                p.relax();
+
+                // Momentum corrector
+                U = HbyA - rAtU() * fvc::grad(p);
+                U.correctBoundaryConditions();
+                fvOptions.correct(U);
+            }
         }
 
         laminarTransport.correct();
@@ -121,7 +265,7 @@ int main(int argc, char *argv[])
         runTime.printExecutionTime(Info);
     }
 
-    Info<< "End\n" << endl;
+    Info << "End\n" << endl;
 
     return 0;
 }
