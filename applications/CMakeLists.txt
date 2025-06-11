@@ -1,7 +1,13 @@
 add_definitions(-DWM_LABEL_SIZE=64)
 add_definitions(-DWM_DP)
 
-add_executable(simpleFoamHPC solvers/incompressible/simpleFoamHPC/simpleFoamHPC.C)
+add_executable(simpleFoamHPC
+        solvers/incompressible/simpleFoamHPC/simpleFoamHPC.C
+        ${CMAKE_SOURCE_DIR}/src/dynamicFvMesh/dynamicFvMesh/dynamicFvMesh.C
+        ${CMAKE_SOURCE_DIR}/src/finiteVolume/finiteVolume/fvm/fvmDiv.C
+        ${CMAKE_SOURCE_DIR}/src/finiteVolume/finiteVolume/convectionSchemes/convectionScheme/convectionScheme.C
+        ${CMAKE_SOURCE_DIR}/src/finiteVolume/cfdTools/general/MRF/MRFZoneList.C
+        ${CMAKE_SOURCE_DIR}/src/OpenFOAM/matrices/lduMatrix/lduMatrix/lduMatrix.C)
 
 target_include_directories(simpleFoamHPC PRIVATE
         ${CMAKE_SOURCE_DIR}/src/finiteVolume/lnInclude
