@@ -1,0 +1,3 @@
+simpleFoamHPC.C
+
+EXE = $(FOAM_APPBIN)/simpleFoamHPC
