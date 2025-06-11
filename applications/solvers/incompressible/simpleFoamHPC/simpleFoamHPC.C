@@ -71,6 +71,37 @@ Description
 #include "fvOptions.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+void divGaussConvectionWithUpwind(const surfaceScalarField& phi, const volVectorField& U, fvVectorMatrix& fvm)
+{
+    tmp<surfaceScalarField> tweights = pos0(phi);
+    const surfaceScalarField& weights = tweights();
+
+    scalarField& lower = fvm.lower();
+    scalarField& upper = fvm.upper();
+    lower = -weights.primitiveField() * phi.primitiveField();
+    upper = lower + phi.primitiveField();
+
+    scalarField& Diag = fvm.diag();
+
+    const labelUList& l = fvm.lduAddr().lowerAddr();
+    const labelUList& u = fvm.lduAddr().upperAddr();
+
+    for (label face = 0; face < l.size(); face++)
+    {
+        Diag[l[face]] -= lower[face];
+        Diag[u[face]] -= upper[face];
+    }
+
+    for (int patchi = 0; patchi < U.boundaryField().size(); patchi++)
+    {
+        const fvPatchField<vector>& psf = U.boundaryField()[patchi];
+        const fvsPatchScalarField& patchFlux = phi.boundaryField()[patchi];
+        const fvsPatchScalarField& pw = weights.boundaryField()[patchi];
+
+        fvm.internalCoeffs()[patchi] = patchFlux * psf.valueInternalCoeffs(pw);
+        fvm.boundaryCoeffs()[patchi] = -patchFlux * psf.valueBoundaryCoeffs(pw);
+    }
+}
 
 int main(int argc, char* argv[])
 {
@@ -83,7 +114,7 @@ int main(int argc, char* argv[])
 
 #include "addCheckCaseOptions.H"
 #include "setRootCaseLists.H"
-    Foam::Info<< "Create time\n" << Foam::endl;
+    Foam::Info << "Create time\n" << Foam::endl;
 
     Foam::Time runTime(Foam::Time::controlDictName, args);
     Info << "Create mesh for time = "
@@ -122,7 +153,7 @@ int main(int argc, char* argv[])
         mesh
     );
 
-    Info<< "Reading/calculating face flux field phi\n" << endl;
+    Info << "Reading/calculating face flux field phi\n" << endl;
 
     surfaceScalarField phi
     (
@@ -185,9 +216,18 @@ int main(int argc, char* argv[])
 
             MRF.correctBoundaryVelocity(U);
 
+            //////////////////////////////////
+            tmp<fvVectorMatrix> tUEqnHPC(
+                new fvVectorMatrix(
+                    U,
+                    phi.dimensions() * U.dimensions()
+                )
+            );
+            divGaussConvectionWithUpwind(phi, U, tUEqnHPC.ref());
+            //////////////////////////////////
             tmp<fvVectorMatrix> tUEqn
             (
-                fvm::div(phi, U)
+                tUEqnHPC
                 + MRF.DDt(U)
                 + turbulence->divDevReff(U)
                 ==
